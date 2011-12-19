@@ -89,10 +89,9 @@ int git_commit_create_v(
 	return error;
 }
 
-int git_commit_create(
+int git_commit_odb_create(
 		git_oid *oid,
-		git_repository *repo,
-		const char *update_ref,
+		git_odb *odb,
 		const git_signature *author,
 		const git_signature *committer,
 		const char *message_encoding,
@@ -103,19 +102,10 @@ int git_commit_create(
 {
 	git_buf commit = GIT_BUF_INIT;
 	int error, i;
-	git_odb *odb;
-
-	if (git_object_owner((const git_object *)tree) != repo)
-		return git__throw(GIT_EINVALIDARGS, "The given tree does not belong to this repository");
 
 	git_oid__writebuf(&commit, "tree ", git_object_id((const git_object *)tree));
 
 	for (i = 0; i < parent_count; ++i) {
-		if (git_object_owner((const git_object *)parents[i]) != repo) {
-			error = git__throw(GIT_EINVALIDARGS, "The given parent does not belong to this repository");
-			goto cleanup;
-		}
-
 		git_oid__writebuf(&commit, "parent ", git_object_id((const git_object *)parents[i]));
 	}
 
@@ -134,12 +124,50 @@ int git_commit_create(
 		goto cleanup;
 	}
 
-	error = git_repository_odb__weakptr(&odb, repo);
-	if (error < GIT_SUCCESS)
-		goto cleanup;
-
 	error = git_odb_write(oid, odb, commit.ptr, commit.size, GIT_OBJ_COMMIT);
 	git_buf_free(&commit);
+
+	if (error < GIT_SUCCESS)
+		return git__rethrow(error, "Failed to create commit");
+
+	return GIT_SUCCESS;
+
+cleanup:
+	git_buf_free(&commit);
+	return error;
+}
+
+int git_commit_create(
+		git_oid *oid,
+		git_repository *repo,
+		const char *update_ref,
+		const git_signature *author,
+		const git_signature *committer,
+		const char *message_encoding,
+		const char *message,
+		const git_tree *tree,
+		int parent_count,
+		const git_commit *parents[])
+{
+	int error, i;
+	git_odb *odb;
+
+	if (git_object_owner((const git_object *)tree) != repo)
+		return git__throw(GIT_EINVALIDARGS, "The given tree does not belong to this repository");
+
+	for (i = 0; i < parent_count; ++i) {
+		if (git_object_owner((const git_object *)parents[i]) != repo) {
+			error = git__throw(GIT_EINVALIDARGS, "The given parent does not belong to this repository");
+			return error;
+		}
+	}
+
+	error = git_repository_odb__weakptr(&odb, repo);
+	if (error < GIT_SUCCESS)
+		return error;
+
+	error = git_commit_odb_create(oid, odb, author, committer,
+		message_encoding, message, tree, parent_count, parents);
 
 	if (error == GIT_SUCCESS && update_ref != NULL) {
 		git_reference *head;
@@ -181,10 +209,6 @@ int git_commit_create(
 		return git__rethrow(error, "Failed to create commit");
 
 	return GIT_SUCCESS;
-
-cleanup:
-	git_buf_free(&commit);
-	return error;
 }
 
 int git_commit__parse_buffer(git_commit *commit, const void *data, size_t len)
